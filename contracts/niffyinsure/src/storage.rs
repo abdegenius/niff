@@ -60,3 +60,23 @@ pub fn next_claim_id(env: &Env) -> u64 {
     env.storage().instance().set(&DataKey::ClaimCounter, &next);
     next
 }
+
+pub fn get_claim_counter(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ClaimCounter)
+        .unwrap_or(0u64)
+}
+
+pub fn get_policy_counter(env: &Env, holder: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PolicyCounter(holder.clone()))
+        .unwrap_or(0u32)
+}
+
+pub fn has_policy(env: &Env, holder: &Address, policy_id: u32) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::Policy(holder.clone(), policy_id))
+}
