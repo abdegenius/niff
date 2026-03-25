@@ -1,4 +1,4 @@
-use crate::{
+﻿use crate::{
     calculator,
     ledger,
     premium,
@@ -38,10 +38,19 @@ pub enum PolicyError {
     InvalidAge = 108,
     /// Risk score out of range (0..=100).
     InvalidRiskScore = 109,
+    /// Supplied asset is not on the admin-controlled allowlist.
+    AssetNotAllowed = 110,
     /// Policy not found.
-    NotFound = 110,
+    NotFound = 111,
     /// Policy is already active.
-    AlreadyActive = 111,
+    AlreadyActive = 112,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuoteFailure {
+    pub code: u32,
+    pub message: String,
 }
 
 /// Versioned event emitted by `initiate_policy`.
@@ -87,7 +96,7 @@ pub fn generate_premium(
         coverage: coverage_type,
         safety_score,
     };
-    
+
     validate::check_risk_input(&input)?;
     if base_amount <= 0 {
         return Err(validate::Error::InvalidBaseAmount);
@@ -124,12 +133,8 @@ pub fn map_quote_error(env: &Env, err: Error) -> QuoteFailure {
         Error::MissingCoverageMultiplier => "premium table missing one or more coverage multipliers",
         Error::RegionMultiplierOutOfBounds => "region multiplier out of bounds: expected 0.5000x..=5.0000x",
         Error::AgeMultiplierOutOfBounds => "age-band multiplier out of bounds: expected 0.5000x..=5.0000x",
-        Error::CoverageMultiplierOutOfBounds => {
-            "coverage multiplier out of bounds: expected 0.5000x..=5.0000x"
-        }
-        Error::SafetyDiscountOutOfBounds => {
-            "safety discount out of bounds: expected 0.0000x..=0.5000x"
-        }
+        Error::CoverageMultiplierOutOfBounds => "coverage multiplier out of bounds: expected 0.5000x..=5.0000x",
+        Error::SafetyDiscountOutOfBounds => "safety discount out of bounds: expected 0.0000x..=0.5000x",
         Error::Overflow => "pricing arithmetic overflow: reduce base amount or multiplier values",
         Error::DivideByZero => "pricing divide by zero: check configured scaling factors",
         Error::InvalidQuoteTtl => "quote ttl misconfigured: contact support",
@@ -167,6 +172,11 @@ pub fn map_quote_error(env: &Env, err: Error) -> QuoteFailure {
 }
 
 /// Turns an accepted quote into an enforceable on-chain policy.
+///
+/// # Asset
+/// `asset` must be on the admin-controlled allowlist at call time.
+/// The asset is bound to the policy and used for both premium payment
+/// and future claim payouts — no cross-asset settlement in MVP.
 pub fn initiate_policy(
     env: &Env,
     holder: Address,
@@ -176,9 +186,15 @@ pub fn initiate_policy(
     coverage_type: CoverageType,
     safety_score: u32,
     base_amount: i128,
+    asset: Address,
 ) -> Result<Policy, PolicyError> {
     if storage::is_paused(env) {
         return Err(PolicyError::ContractPaused);
+    }
+
+    // Asset allowlist check — before auth so callers get a clear error.
+    if !storage::is_allowed_asset(env, &asset) {
+        return Err(PolicyError::AssetNotAllowed);
     }
 
     holder.require_auth();
@@ -197,16 +213,8 @@ pub fn initiate_policy(
         return Err(PolicyError::InvalidCoverage);
     }
 
-    // 4. Compute premium via the calculator (external or local fallback).
-    //    Map calculator errors to PolicyError so callers get a typed failure.
-    let risk_input = crate::types::RiskInput {
-        region: region.clone(),
-        age_band: age_to_band(age),
-        coverage: risk_score_to_coverage(risk_score),
-        safety_score: 0,
-    };
-    let base_amount = coverage / 10; // 10% of coverage as base
-    let quote = crate::calculator::compute_quote(env, &risk_input, base_amount, false, QUOTE_TTL_LEDGERS)
+    // Compute premium via the calculator (external or local fallback).
+    let quote = crate::calculator::compute_quote(env, &input, base_amount, false, QUOTE_TTL_LEDGERS)
         .map_err(|e| match e {
             validate::Error::CalculatorPaused => PolicyError::ContractPaused,
             validate::Error::CalculatorCallFailed | validate::Error::CalculatorNotSet => PolicyError::PremiumOverflow,
@@ -217,12 +225,16 @@ pub fn initiate_policy(
         return Err(PolicyError::InvalidPremium);
     }
 
-    // Allocate unique per-holder policy_id
+    // Allocate unique per-holder policy_id.
     let policy_id = storage::next_policy_id(env, &holder);
 
-    // Premium transfer: holder → treasury address (via contract)
+    if storage::has_policy(env, &holder, policy_id) {
+        return Err(PolicyError::DuplicatePolicyId);
+    }
+
+    // Premium transfer: holder -> treasury using the policy's bound asset.
     // Done BEFORE any durable writes so failure leaves no partial state.
-    token::collect_premium(env, &holder, premium_amount);
+    token::collect_premium(env, &holder, &asset, premium_amount);
 
     let current_ledger = env.ledger().sequence();
     let end_ledger = current_ledger
@@ -239,14 +251,12 @@ pub fn initiate_policy(
         is_active: true,
         start_ledger: current_ledger,
         end_ledger,
+        asset: asset.clone(),
     };
 
     validate::check_policy(&policy).map_err(|_| PolicyError::PolicyValidation)?;
 
-    // 8. Persist policy
-    storage::set_policy(env, &policy);
-
-    // 9. Update voter registry
+    storage::set_policy(env, &holder, policy_id, &policy);
     storage::add_voter(env, &holder);
 
     PolicyInitiated {
@@ -254,7 +264,7 @@ pub fn initiate_policy(
         policy_id,
         holder: holder.clone(),
         premium: premium_amount,
-        asset: storage::get_token(env),
+        asset: asset.clone(),
         policy_type,
         region,
         coverage: base_amount,
@@ -264,24 +274,4 @@ pub fn initiate_policy(
     .publish(env);
 
     Ok(policy)
-}
-
-fn age_to_band(age: u32) -> crate::types::AgeBand {
-    if age < 30 {
-        crate::types::AgeBand::Young
-    } else if age < 60 {
-        crate::types::AgeBand::Adult
-    } else {
-        crate::types::AgeBand::Senior
-    }
-}
-
-fn risk_score_to_coverage(risk_score: u32) -> crate::types::CoverageType {
-    if risk_score <= 3 {
-        crate::types::CoverageType::Basic
-    } else if risk_score <= 7 {
-        crate::types::CoverageType::Standard
-    } else {
-        crate::types::CoverageType::Premium
-    }
 }

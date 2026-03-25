@@ -71,6 +71,9 @@ model Policy {
   isActive              Boolean  @default(true)
   startLedger           Int
   endLedger             Int
+  /// SEP-41 asset contract ID bound to this policy for premium and payout.
+  /// Null for legacy policies created before multi-asset support.
+  assetContractId       String?
   txHash                String?
   eventIndex            Int?
   createdAt             DateTime @default(now())
@@ -124,4 +127,24 @@ enum ClaimStatus {
 enum VoteType {
   APPROVE
   REJECT
+}
+
+/// Off-chain metadata for allowlisted SEP-41 asset contracts.
+/// Populated by the indexer when it observes AssetAdded events.
+/// Used by the frontend and API to display correct symbol/decimals.
+model AllowedAsset {
+  /// SEP-41 contract address (Stellar strkey format).
+  contractId    String   @id
+  /// Token symbol, e.g. "USDC", "XLM". Populated off-chain.
+  symbol        String?
+  /// Decimal places, e.g. 7 for XLM/USDC on Stellar.
+  decimals      Int      @default(7)
+  /// Whether this asset is currently on the allowlist.
+  isAllowed     Boolean  @default(true)
+  /// Ledger at which the asset was added to the allowlist.
+  addedAtLedger Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("allowed_assets")
 }
