@@ -11,7 +11,7 @@ pub enum DataKey {
     /// Per-holder policy counter; next policy_id = counter + 1
     PolicyCounter(Address),
     Claim(u64),
-    /// (claim_id, voter_address) → VoteOption
+    /// (claim_id, voter_address) → VoteOption; immutable after first write
     Vote(u64, Address),
     /// Vec<Address> of all current active policyholders (voters)
     Voters,
@@ -75,19 +75,24 @@ pub fn get_claim(env: &Env, claim_id: u64) -> Option<crate::types::Claim> {
 #[allow(dead_code)]
 pub fn next_policy_id(env: &Env, holder: &Address) -> u32 {
     let key = DataKey::PolicyCounter(holder.clone());
-    let next: u32 = env.storage().persistent().get(&key).unwrap_or(0) + 1;
+    let current: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    let next = current
+        .checked_add(1)
+        .unwrap_or_else(|| panic!("policy_id overflow"));
     env.storage().persistent().set(&key, &next);
     next
 }
 
 #[allow(dead_code)]
 pub fn next_claim_id(env: &Env) -> u64 {
-    let next: u64 = env
+    let current: u64 = env
         .storage()
         .instance()
         .get(&DataKey::ClaimCounter)
-        .unwrap_or(0u64)
-        + 1;
+        .unwrap_or(0u64);
+    let next = current
+        .checked_add(1)
+        .unwrap_or_else(|| panic!("claim_id overflow"));
     env.storage().instance().set(&DataKey::ClaimCounter, &next);
     next
 }
