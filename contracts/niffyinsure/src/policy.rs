@@ -1,5 +1,5 @@
 use crate::{
-    premium,
+    premium_pure,
     types::{PolicyType, PremiumQuote, RegionTier},
 };
 use soroban_sdk::{contracterror, contracttype, Env, String};
@@ -42,13 +42,14 @@ pub fn generate_premium(
         return Err(QuoteError::InvalidQuoteTtl);
     }
 
-    let total = premium::compute_premium_checked(&policy_type, &region, age, risk_score)
-        .ok_or(QuoteError::ArithmeticOverflow)?;
+    let factors = premium_pure::PremiumFactors::new(&policy_type, &region, age, risk_score)
+        .map_err(|_| QuoteError::InvalidAge)?;  // or custom map
+    let total = premium_pure::compute_premium_pure(&factors)
+        .map_err(|_| QuoteError::ArithmeticOverflow)?;
 
     let line_items = if include_breakdown {
         Some(
-            premium::build_line_items(env, &policy_type, &region, age, risk_score)
-                .ok_or(QuoteError::ArithmeticOverflow)?,
+            premium_pure::build_line_items_pure(env, &factors)?
         )
     } else {
         None
