@@ -1,26 +1,38 @@
 import express from "express";
-import policyRoutes from "./routes/policy.routes";
-import { errorHandler } from "./middleware/errorHandler";
-import { openapiSpec } from "./openapi/spec";
-import { seedDevData } from "./db/seed";
+import { checkRedisHealth, closeRedisClient } from "./redis/client";
+import { collectRedisMetrics } from "./redis/metrics";
 
 const app = express();
 app.use(express.json());
 
-// Seed dev data (no-op in test — tests call _resetStore + insert their own data)
-if (process.env.NODE_ENV !== "test") {
-  seedDevData();
-}
+/** Basic liveness probe — always returns 200 */
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
 
-// ── Routes ───────────────────────────────────────────────────────────────────
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
+/**
+ * Readiness probe — includes Redis connectivity.
+ * Returns 200 if Redis is up, 503 if not.
+ * Kubernetes / load-balancer can use this to gate traffic.
+ */
+app.get("/health/ready", async (_req, res) => {
+  const redisOk = await checkRedisHealth();
+  res.status(redisOk ? 200 : 503).json({
+    status: redisOk ? "ok" : "degraded",
+    redis: redisOk ? "up" : "down",
+  });
+});
 
-/** Serve the OpenAPI spec as JSON — CI can diff this against generated output. */
-app.get("/openapi.json", (_req, res) => res.json(openapiSpec));
+/**
+ * Redis metrics endpoint — queue depths and memory usage.
+ * Wire a Prometheus scraper or alerting rule against:
+ *   queues["claim-events"].depth > 1000  → scale workers
+ *   memory_used_mb > threshold           → eviction risk
+ */
+app.get("/metrics/redis", async (_req, res) => {
+  const metrics = await collectRedisMetrics();
+  res.json(metrics);
+});
 
-app.use("/policies", policyRoutes);
-
-// ── Error handler (must be last) ─────────────────────────────────────────────
-app.use(errorHandler);
-
+export { closeRedisClient };
 export default app;
