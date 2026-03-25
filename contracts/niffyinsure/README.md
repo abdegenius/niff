@@ -65,14 +65,6 @@ Record the contract ID and the SHA-256 from `make sha` in your release notes so 
 - Validation failures return typed error codes; API layers can map these using `quote_error_message(code)` for support-friendly messages.
 - Off-chain quote caches must enforce `valid_until_ledger`: if admin-adjustable multipliers are introduced later, stale cached quotes must be discarded and re-simulated before bind.
 
-## Policy bind & termination
-
-- **`initiate_policy`**: holder-auth; creates an active `Policy` and increments per-holder `HolderActivePolicyCount`. The first active policy for an address adds that address to the voter registry (`Voters`); additional active policies keep the holder listed exactly once.
-- **`terminate_policy`**: holder-auth; sets `is_active = false`, stamps `terminated_at_ledger`, writes a compact `TerminationReason` enum (no free-text allegations on-chain), and decrements `HolderActivePolicyCount`. When the count reaches zero, the holder is removed from `Voters`. Records stay in persistent storage for audit/indexers.
-- **`PolicyTerminated` event** (`#[contractevent]`): fixed topics `niffyinsure`, `policy_terminated`; topic fields `holder`, `policy_id`; data includes `reason_code`, `terminated_by_admin`, `open_claim_bypass`, `open_claims`, `at_ledger`.
-- **Pending claims**: while `OpenClaimCount(holder, policy_id) > 0`, holder termination returns `OpenClaimsMustFinalize`. **`admin_terminate_policy`** requires stored admin auth; `allow_open_claims: true` documents explicit acceptance of bypassing that guard (indexed on the event). Until `file_claim` maintains counters automatically, **`admin_set_open_claim_count`** is admin-only for tests and break-glass ops.
-- **Refunds**: premium settlement and pro-rata refunds are **out of scope** for this contract; handle in a separate treasury/escrow flow if product requires it.
-
 ## Module map
 
 ```
