@@ -9,6 +9,27 @@ mod token;
 pub mod types;
 pub mod validate;
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ORACLE / PARAMETRIC TRIGGER MODULE (experimental only)
+//
+// ⚠️  LEGAL / COMPLIANCE REVIEW GATE: This module is compiled ONLY when the
+// `experimental` feature flag is enabled.  Default production builds cannot
+// process oracle triggers.
+//
+// Required before activation (see DESIGN-ORACLE.md):
+//   ✓ Complete cryptographic design review (signature schemes, replay protection)
+//   ✓ Game-theoretic analysis (oracle incentivization, sybil resistance)
+//   ✓ Legal & compliance review (regulatory classification of parametric triggers)
+//   ✓ Security audit by qualified Soroban smart contract auditors
+//
+// Do NOT enable in production without completing all required reviews.
+// ═════════════════════════════════════════════════════════════════════════════
+#[cfg(feature = "experimental")]
+mod oracle;
+
+#[cfg(feature = "experimental")]
+pub use oracle::*;
+
 use soroban_sdk::{contract, contractimpl, Address, Env};
 
 #[contract]
