@@ -1,146 +1,242 @@
-use soroban_sdk::{contracterror, Env, Address, String, Vec, Symbol, token};
-use crate::storage as st;
-use crate::types::*;
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    ClaimNotProcessing = 1,
-    VotingDeadlineNotPassed = 2,
-    NoActiveVoters = 3,
-    NoEligiblePayout = 4,
-    AlreadyVoted = 5,
-    InvalidVote = 6,
-    PolicyNotFound = 7,
-    PolicyInactive = 8,
-    InvalidClaimant = 9,
-    InvalidAmount = 10,
-    DetailsTooLong = 11,
-    TooManyImages = 12,
-    ImageTooLong = 13,
-    InvalidDuration = 14,
-}
+// Claim lifecycle and DAO voting will be implemented here.
+//
+// Planned public functions:
+//   file_claim(env, policy_id, amount, details, image_urls)
+//   vote_on_claim(env, voter, claim_id, vote)
+//
+// Open claim accounting: `storage::OpenClaimCount(holder, policy_id)` must be
+// incremented when a claim enters `Processing` and decremented when it reaches
+// a terminal status (`Approved` / `Rejected`), so policy termination can block
+// or audit in-flight claims. Until `file_claim` ships, admins may use
+// `admin_set_open_claim_count` in tests or break-glass ops only.
+use crate::{
+    ledger,
+    storage,
+    types::{Claim, ClaimProcessed, ClaimStatus, VoteOption},
+    validate::Error,
+};
+use soroban_sdk::{symbol_short, token, Address, Env, String, Vec};
 
+// ── file_claim ────────────────────────────────────────────────────────────────
+
+/// File a new claim against an active policy.
+///
+/// Window checks (all via `ledger` helpers):
+/// - Policy must be active: `now` in `[start_ledger, end_ledger)`.
+/// - Rate-limit: `now >= last_filed_at + RATE_LIMIT_WINDOW_LEDGERS` (or first claim).
+///
+/// Returns the new `claim_id`.
 pub fn file_claim(
-    env: Env,
-    holder: Address,
+    env: &Env,
+    holder: &Address,
     policy_id: u32,
     amount: i128,
-    details: String,
-    image_urls: Vec<String>,
-    vote_duration_ledgers: u32,
+    details: &String,
+    image_urls: &Vec<String>,
 ) -> Result<u64, Error> {
-    // Stub policy check - in full, load Policy, check is_active, claimant==holder, amount <= coverage
-    if !st::has_policy(&env, &holder, policy_id) {
-        return Err(Error::PolicyNotFound);
+    let policy = storage::get_policy(env, holder, policy_id).ok_or(Error::ClaimNotFound)?;
+
+    // Policy active window check using ledger helper.
+    let now = env.ledger().sequence();
+    if !ledger::is_within_window(now, policy.start_ledger, policy.end_ledger) {
+        return if ledger::is_expired(now, policy.end_ledger) {
+            Err(Error::PolicyExpired)
+        } else {
+            Err(Error::PolicyInactive)
+        };
     }
-    // Stub active check
-    if !validate::check_policy_active_stub(&env, &holder, policy_id) {
+    if !policy.is_active {
         return Err(Error::PolicyInactive);
     }
-    if amount <= 0 {
-        return Err(Error::InvalidAmount);
-    }
-    if details.len() as u32 > DETAILS_MAX_LEN {
-        return Err(Error::DetailsTooLong);
-    }
-    if image_urls.len() as u32 > IMAGE_URLS_MAX {
-        return Err(Error::TooManyImages);
-    }
-    for url in image_urls.iter() {
-        if url.len() as u32 > IMAGE_URL_MAX_LEN {
-            return Err(Error::ImageTooLong);
+
+    // Rate-limit check.
+    if let Some(last) = storage::get_last_claim_ledger(env, holder) {
+        if !ledger::is_rate_limit_elapsed(now, last, ledger::RATE_LIMIT_WINDOW_LEDGERS) {
+            return Err(Error::RateLimitExceeded);
         }
     }
-    if vote_duration_ledgers == 0 {
-        return Err(Error::InvalidDuration);
-    }
-    let current_ledger = env.ledger().sequence();
-    let deadline = current_ledger + vote_duration_ledgers;
-    let claim_id = st::next_claim_id(&env);
+
+    crate::validate::check_claim_fields(env, amount, policy.coverage, details, image_urls)?;
+
+    let claim_id = storage::next_claim_id(env);
     let claim = Claim {
         claim_id,
         policy_id,
         claimant: holder.clone(),
         amount,
-        details,
-        image_urls,
+        details: details.clone(),
+        image_urls: image_urls.clone(),
         status: ClaimStatus::Processing,
-        voting_deadline_ledger: deadline,
         approve_votes: 0,
         reject_votes: 0,
+        filed_at: now,
     };
-    st::put_claim(&env, &claim_id, &claim);
-    // TODO: emit claim filed event (quorum-ready)
+
+    storage::set_claim(env, &claim);
+    storage::snapshot_claim_voters(env, claim_id);
+    storage::set_last_claim_ledger(env, holder, now);
+
+    env.events().publish(
+        (symbol_short!("clm_filed"), claim_id),
+        holder.clone(),
+    );
+
     Ok(claim_id)
 }
 
-pub fn vote_on_claim(env: Env, voter: Address, claim_id: u64, vote: VoteOption) -> Result<(), Error> {
-    let claim = st::get_claim(&env, &claim_id);
-    if claim.status != ClaimStatus::Processing {
-        return Err(Error::ClaimNotProcessing);
-    }
-    let current = env.ledger().sequence();
-    if current < claim.voting_deadline_ledger {
-        return Err(Error::VotingDeadlineNotPassed);
-    }
-    // Stub voter eligibility
-    if !validate::check_voter_eligible_stub(&env, &voter) {
-        return Err(Error::InvalidVote);
-    }
-    if st::has_vote(&env, &claim_id, &voter) {
-        return Err(Error::AlreadyVoted);
-    }
-    st::record_vote(&env, &claim_id, &voter, &vote);
-    let mut updated = claim.clone();
-    match vote {
-        VoteOption::Approve => updated.approve_votes += 1,
-        VoteOption::Reject => updated.reject_votes += 1,
-    };
-    st::put_claim(&env, &claim_id, &updated);
-    // TODO: emit vote cast event
-    Ok(())
-}
+// ── vote_on_claim ─────────────────────────────────────────────────────────────
 
-pub fn finalize_claim(env: Env, claim_id: u64) -> Result<(), Error> {
-    let mut claim = st::get_claim(&env, &claim_id);
+/// Cast a vote on a pending claim.
+///
+/// Window check: `now < filed_at + VOTE_WINDOW_LEDGERS` (via `ledger::is_vote_open`).
+/// Returns the updated `ClaimStatus` after tallying.
+pub fn vote_on_claim(
+    env: &Env,
+    voter: &Address,
+    claim_id: u64,
+    vote: &VoteOption,
+) -> Result<ClaimStatus, Error> {
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
     if claim.status.is_terminal() {
-        return Ok(()); // idempotent
+        return Err(Error::ClaimAlreadyTerminal);
     }
-    let current_ledger = env.ledger().sequence();
-    let eligible = st::get_voters_len(&env);
-    if eligible == 0 {
-        return Err(Error::NoActiveVoters);
+
+    // Voting window check.
+    let now = env.ledger().sequence();
+    if !ledger::is_vote_open(now, claim.filed_at, ledger::VOTE_WINDOW_LEDGERS) {
+        return Err(Error::VotingWindowClosed);
     }
-    let votes_cast = claim.approve_votes + claim.reject_votes; // using tallies as proxy
-    let all_voted = votes_cast as u32 == eligible;
-    let deadline_passed = current_ledger > claim.voting_deadline_ledger;
-    if !all_voted && !deadline_passed {
-        return Err(Error::VotingDeadlineNotPassed);
+
+    // Voter must be in the claim's snapshot electorate.
+    let snapshot = storage::get_claim_voters(env, claim_id);
+    let eligible = snapshot.iter().any(|v| v == *voter);
+    if !eligible {
+        return Err(Error::NotEligibleVoter);
     }
-    let prev_status = claim.status.clone();
-    if claim.approve_votes * 2 > eligible {
+
+    // Duplicate vote check.
+    if storage::get_vote(env, claim_id, voter).is_some() {
+        return Err(Error::DuplicateVote);
+    }
+
+    storage::set_vote(env, claim_id, voter, vote);
+
+    match vote {
+        VoteOption::Approve => claim.approve_votes += 1,
+        VoteOption::Reject => claim.reject_votes += 1,
+    }
+
+    env.events().publish(
+(symbol_short!("c_paid"), claim.claim_id),
+        ClaimProcessed {
+            claim_id: claim.claim_id,
+            recipient: claim.claimant.clone(),
+            amount: claim.amount,
+            asset: claim.asset.clone(),
+        },
+    );
+
+    // Auto-finalize on majority.
+    let total = snapshot.len();
+    let majority = total / 2 + 1;
+    if claim.approve_votes >= majority {
         claim.status = ClaimStatus::Approved;
-        let token = st::get_token(&env);
- token::Client::new(&env, &token).transfer(&claim.claimant, &claim.claimant, &claim.amount); // stub from claimant
-    } else {
+        // Payout is triggered by admin via process_claim, not here.
+        // Setting Approved makes the claim eligible for process_claim.
+    } else if claim.reject_votes >= majority {
         claim.status = ClaimStatus::Rejected;
     }
-    st::put_claim(&env, &claim_id, &claim);
-    let status_event = (symbol_short!("status_changed"), claim_id);
-    env.events().publish(status_event, (prev_status, claim.status.clone(), claim.approve_votes, claim.reject_votes, current_ledger));
+
+    storage::set_claim(env, &claim);
+    Ok(claim.status)
+}
+
+// ── finalize_claim ────────────────────────────────────────────────────────────
+
+/// Finalize a claim after the voting deadline has passed.
+///
+/// Window check: `now >= filed_at + VOTE_WINDOW_LEDGERS` (via `ledger::is_vote_deadline_passed`).
+/// Plurality wins; tie resolves to Rejected.
+pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
+    if claim.status.is_terminal() {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+
+    let now = env.ledger().sequence();
+    if !ledger::is_vote_deadline_passed(now, claim.filed_at, ledger::VOTE_WINDOW_LEDGERS) {
+        return Err(Error::VotingWindowStillOpen);
+    }
+
+    claim.status = if claim.approve_votes > claim.reject_votes {
+        ClaimStatus::Approved
+    } else {
+        // Tie or reject plurality → Rejected (insurer wins tie).
+        ClaimStatus::Rejected
+    };
+
+    if claim.status == ClaimStatus::Approved {
+        // Payout triggered by admin via process_claim.
+    }
+
+    storage::set_claim(env, &claim);
+    Ok(claim.status)
+}
+
+// ── process_claim (admin payout trigger) ─────────────────────────────────────
+
+pub fn process_claim(env: &Env, claim_id: u64) -> Result<(), Error> {
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
+    if claim.status == ClaimStatus::Paid {
+        return Err(Error::AlreadyPaid);
+    }
+    if claim.status != ClaimStatus::Approved {
+        return Err(Error::ClaimNotApproved);
+    }
+
+    payout(env, &claim)?;
+    claim.status = ClaimStatus::Paid;
+    storage::set_claim(env, &claim);
     Ok(())
 }
 
-// Stubs for validation - full policy/validate impl later
-mod claim_validate {
-    use soroban_sdk::{Env, Address};
-    pub fn check_policy_active_stub(_env: &Env, _holder: &Address, _policy_id: u32) -> bool {
-        true // stub
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+fn payout(env: &Env, claim: &Claim) -> Result<(), Error> {
+    let token_addr = storage::get_token(env);
+    let token_client = token::Client::new(env, &token_addr);
+    let treasury = env.current_contract_address();
+
+    if token_client.balance(&treasury) < claim.amount {
+        return Err(Error::InsufficientTreasury);
     }
-    pub fn check_voter_eligible_stub(_env: &Env, _voter: &Address) -> bool {
-        true // stub
-    }
+
+    token_client.transfer(&treasury, &claim.claimant, &claim.amount);
+
+    env.events().publish(
+        (symbol_short!("clm_paid"), claim.claim_id),
+        ClaimProcessed {
+            claim_id: claim.claim_id,
+            recipient: claim.claimant.clone(),
+            amount: claim.amount,
+        },
+    );
+
+    Ok(())
 }
-use self::claim_validate as validate;
+
+pub fn get_claim(env: &Env, claim_id: u64) -> Result<Claim, Error> {
+    storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)
+}
+
+pub fn is_allowed_asset(env: &Env, asset: &Address) -> bool {
+    storage::is_allowed_asset(env, asset)
+}
+
+pub fn set_allowed_asset(env: &Env, asset: &Address, allowed: bool) {
+    storage::set_allowed_asset(env, asset, allowed);
+}
 
