@@ -34,11 +34,20 @@ export const validationSchema = Joi.object({
   // Auth
   JWT_SECRET: Joi.string().min(32).required(),
   ADMIN_TOKEN: Joi.string().required(),
+  // CORS
+  CORS_ORIGINS: Joi.string().default('*').description('Comma-separated public CORS origins'),
+  ADMIN_CORS_ORIGINS: Joi.string().allow('').default('').description('Comma-separated admin UI CORS origins'),
   // Logging
   LOG_LEVEL: Joi.string()
     .default('info')
     .valid('error', 'warn', 'log', 'verbose', 'debug'),
   // Cache
   CACHE_TTL_SECONDS: Joi.number().default(60).description('Cache TTL in seconds'),
+  // CAPTCHA (Turnstile or hCaptcha)
+  CAPTCHA_PROVIDER: Joi.string().valid('turnstile', 'hcaptcha').default('turnstile'),
+  CAPTCHA_SECRET_KEY: Joi.string().allow('').default('dev-skip').description('Server-side CAPTCHA secret'),
+  CAPTCHA_SITE_KEY: Joi.string().allow('').description('Client-side CAPTCHA site key (exposed to frontend)'),
+  // Support
+  IP_HASH_SALT: Joi.string().allow('').default('niff-salt').description('Salt for IP hashing'),
 });
 

@@ -129,6 +129,33 @@ enum VoteType {
   REJECT
 }
 
+/// Immutable operational audit trail written by admin endpoints.
+/// Rows must never be updated or deleted — append-only.
+model AdminAuditLog {
+  id          String   @id @default(uuid())
+  actor       String   /// wallet address or staff email of the operator
+  action      String   /// e.g. "reindex", "pause", "feature_flag_update"
+  payload     Json     /// full request payload for forensic replay
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([actor])
+  @@index([action])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
+}
+
+/// Runtime feature flags toggled by admin operators.
+model FeatureFlag {
+  key         String   @id
+  enabled     Boolean  @default(false)
+  description String?
+  updatedBy   String
+  updatedAt   DateTime @updatedAt
+
+  @@map("feature_flags")
+}
+
 /// Off-chain metadata for allowlisted SEP-41 asset contracts.
 /// Populated by the indexer when it observes AssetAdded events.
 /// Used by the frontend and API to display correct symbol/decimals.
@@ -147,4 +174,37 @@ model AllowedAsset {
   updatedAt     DateTime @updatedAt
 
   @@map("allowed_assets")
+}
+
+/// Support ticket submitted via the /support contact form.
+model SupportTicket {
+  id        String   @id @default(uuid())
+  email     String
+  subject   String
+  message   String
+  /// One-way hash of submitter IP for spam detection (no raw IP stored).
+  ipHash    String?
+  status    TicketStatus @default(OPEN)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("support_tickets")
+}
+
+/// Privacy-safe FAQ expansion counters.
+model FaqStat {
+  faqId      String   @id
+  expansions Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@map("faq_stats")
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
 }
