@@ -1,0 +1,91 @@
+'use client'
+
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { VoteOption } from '@/lib/schemas/vote'
+
+interface VoteConfirmModalProps {
+  open: boolean
+  vote: VoteOption | null
+  claimId: string
+  submitting: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+const COPY: Record<VoteOption, { title: string; description: string; confirmLabel: string }> = {
+  Approve: {
+    title: 'Confirm approval vote',
+    description:
+      'You are about to cast an on-chain vote to approve this claim. If a majority of eligible policyholders approve, the claimant will receive the payout. Your vote is final and cannot be changed after submission.',
+    confirmLabel: 'Sign & approve',
+  },
+  Reject: {
+    title: 'Confirm rejection vote',
+    description:
+      'You are about to cast an on-chain vote to reject this claim. If a majority of eligible policyholders reject, no payout will be issued and the associated policy will be deactivated. Your vote is final and cannot be changed after submission.',
+    confirmLabel: 'Sign & reject',
+  },
+}
+
+export function VoteConfirmModal({
+  open,
+  vote,
+  claimId,
+  submitting,
+  onConfirm,
+  onCancel,
+}: VoteConfirmModalProps) {
+  if (!vote) return null
+  const copy = COPY[vote]
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onCancel()}>
+      <DialogContent
+        aria-labelledby="vote-confirm-title"
+        aria-describedby="vote-confirm-desc"
+      >
+        <DialogHeader>
+          <DialogTitle id="vote-confirm-title">{copy.title}</DialogTitle>
+          <DialogDescription id="vote-confirm-desc">
+            {copy.description}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          Claim ID: <span className="font-mono">{claimId}</span>
+          <br />
+          Your wallet will be prompted to sign the transaction. Network fees
+          apply.
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={onCancel}
+            disabled={submitting}
+            aria-label="Cancel vote"
+          >
+            Cancel
+          </Button>
+          <Button
+            variant={vote === 'Reject' ? 'destructive' : 'default'}
+            onClick={onConfirm}
+            disabled={submitting}
+            aria-label={copy.confirmLabel}
+            aria-busy={submitting}
+          >
+            {submitting ? 'Signing…' : copy.confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
