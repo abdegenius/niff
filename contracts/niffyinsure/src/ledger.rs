@@ -87,6 +87,18 @@ pub const RATE_LIMIT_WINDOW_LEDGERS: u32 = LEDGERS_PER_DAY; // 17_280
 /// Quote validity: how many ledgers a `generate_premium` result stays valid.
 pub const QUOTE_TTL_LEDGERS: u32 = 100;
 
+/// Appeal open window: how many ledgers after rejection a claimant may open an appeal.
+/// ~3 days.  Anchored at the ledger that produced the Rejected status.
+pub const APPEAL_OPEN_WINDOW_LEDGERS: u32 = 3 * LEDGERS_PER_DAY; // 51_840
+
+/// Appeal vote window: how many ledgers voters have to vote on an appeal.
+/// ~7 days (same duration as the base claim vote window).
+pub const APPEAL_VOTE_WINDOW_LEDGERS: u32 = 7 * LEDGERS_PER_DAY; // 120_960
+
+/// Hard cap on appeals per claim.  Prevents infinite ping-pong.
+/// Claimants get exactly one appeal after a Rejected outcome.
+pub const MAX_APPEALS_PER_CLAIM: u32 = 1;
+
 // ── Core window helpers ───────────────────────────────────────────────────────
 
 /// Returns `true` if `now` falls in the half-open interval `[start, end)`.

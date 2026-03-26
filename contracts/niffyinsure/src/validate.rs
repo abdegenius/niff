@@ -53,6 +53,18 @@ pub enum Error {
     VotingWindowStillOpen = 40,
     NotEligibleVoter = 41,
     RateLimitExceeded = 42,
+    /// Appeal open window has passed; claimant can no longer appeal this claim.
+    AppealWindowClosed = 43,
+    /// An appeal is already open for this claim.
+    AppealAlreadyOpen = 44,
+    /// Claim has reached the maximum allowed appeals per claim.
+    MaxAppealsReached = 45,
+    /// Claim is not in Rejected status; cannot open an appeal.
+    ClaimNotRejected = 46,
+    /// No appeal is currently open; cannot vote on or finalize appeal.
+    AppealNotOpen = 47,
+    /// Appeal voting window is still open; cannot finalize appeal yet.
+    AppealWindowStillOpen = 48,
 }
 
 pub fn check_policy(policy: &Policy) -> Result<(), Error> {
