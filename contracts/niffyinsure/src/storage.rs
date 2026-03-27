@@ -39,6 +39,8 @@ pub enum DataKey {
     ClaimVoters(u64),
     /// Last ledger at which `holder` filed a claim (rate-limit anchor).
     LastClaimLedger(Address),
+    /// (claim_id, voter_address) -> VoteOption for appeal round; immutable after first write.
+    AppealVote(u64, Address),
 }
 
 // ── Instance bump ─────────────────────────────────────────────────────────────
@@ -452,4 +454,20 @@ pub fn get_last_claim_ledger(env: &Env, holder: &Address) -> Option<u32> {
     env.storage()
         .persistent()
         .get(&DataKey::LastClaimLedger(holder.clone()))
+}
+
+// ── Appeal vote (persistent) ──────────────────────────────────────────────────
+
+pub fn set_appeal_vote(env: &Env, claim_id: u64, voter: &Address, vote: &VoteOption) {
+    let key = DataKey::AppealVote(claim_id, voter.clone());
+    env.storage().persistent().set(&key, vote);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn get_appeal_vote(env: &Env, claim_id: u64, voter: &Address) -> Option<VoteOption> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AppealVote(claim_id, voter.clone()))
 }

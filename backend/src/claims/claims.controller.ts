@@ -25,7 +25,7 @@ import { BuildClaimTransactionDto } from './dto/build-claim-transaction.dto';
 import { SubmitTransactionDto } from './dto/submit-transaction.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WalletAddress } from '../auth/decorators/wallet-address.decorator';
-import { MAX_LIMIT, DEFAULT_LIMIT } from '../helpers/pagination';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
 @ApiTags('claims')
 @Controller('claims')
@@ -113,9 +113,11 @@ export class ClaimsController {
   }
 
   @Post('submit')
+  @UseGuards(RateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Submit signed claim transaction' })
   @ApiResponse({ status: 200, description: 'Transaction submitted' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
   async submitTransaction(@Body() dto: SubmitTransactionDto) {
     return this.claimsService.submitTransaction(dto.transactionXdr);
   }
